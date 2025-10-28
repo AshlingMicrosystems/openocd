@@ -89,46 +89,51 @@ static void cjtag_move_to_state(tap_state_t goal_state);
 
 static struct mpsse_ctx *local_ctx;
 
-static const uint8_t puDigilentHs2cInitializeSequence[] = {
-		0x80, /* Set output pins            */
-		0xE8, /*        Value               */
-		0xEB, /*        Direction           */
-		0x82, /* Set output pins (high byte)*/
-		0x00, /*        Value               */
-		0x60, /*        Direction           */
-		0x81, /* Read input pins            */
-		0x87  /* Send immediate             */
+static const uint8_t puAshlingOPLDInitializeSequence[] = {
+        0x80, /* Set output pins            */
+        0x68, /*        Value               */
+        0x7B, /*        Direction           */
+        0x82, /* Set output pins (high byte)*/
+        0x0A, /*        Value               */
+        0xFF, /*        Direction           */
+        0x81, /* Read input pins            */
+        0x87  /* Send immediate             */
 };
 
 static const uint8_t pucEscapeSequence[] = {
-		0x80, /* Set output pins            */
-		0xE8, /*        Value               */
-		0xFB, /*        Direction           */
-		0x80, /* Set output pins            */
-		0xE8, /*        Value               */
-		0xFA, /*        Direction           */
-		0x80, /* Set output pins            */
-		0xF9, /*        Value               */
-		0xFA, /*        Direction           */
-		0x8E, /* Clock with no data         */
-		0x00, /*        Number of bits      */
-		0x4B, /* Clock data to TMS pin      */
-		0x05, /*        Length              */
-		0x6A, /*        Data                */
-		0x4B, /* Clock data to TMS pin      */
-		0x01, /*        Length              */
-		0x06, /*        Data                */
-		0x8E, /* Clock with no data         */
-		0x00, /*        Number of bits      */
-		0x80, /* Set output pins            */
-		0xE8, /*        Value               */
-		0xFA, /*        Direction           */
-		0x80, /* Set output pins            */
-		0xE8, /*        Value               */
-		0xFB, /*        Direction           */
-		0x80, /* Set output pins            */
-		0xE8, /*        Value               */
-		0xEB  /*        Direction           */
+        0x80, /* Set output pins            */
+        0x68, /*        Value               */
+        0x7B, /*        Direction           */
+        0x80, /* Set output pins            */
+        0x69, /*        Value               */
+        0x7B, /*        Direction           */
+        0x80, /* Set output pins            */
+        0x61, /*        Value               */
+        0x7B, /*        Direction           */
+        0x80, /* Set output pins            */
+        0x69, /*        Value               */
+        0x7B, /*        Direction           */
+        0x80, /* Set output pins            */
+        0x61, /*        Value               */
+        0x7B,  /*        Direction           */
+        0x80, /* Set output pins            */
+        0x69, /*        Value               */
+        0x7B,  /*        Direction           */
+        0x80, /* Set output pins            */
+        0x61, /*        Value               */
+        0x7B,  /*        Direction           */
+        0x80, /* Set output pins            */
+        0x69, /*        Value               */
+        0x7B,  /*        Direction           */
+        0x80, /* Set output pins            */
+        0x61, /*        Value               */
+        0x7B,  /*        Direction           */
+        0x80, /* Set output pins            */
+        0x69, /*        Value               */
+        0x7B,  /*        Direction           */
+        0x80, /* Set output pins            */
+        0x68, /*        Value               */
+        0x7B,  /*        Direction           */
 };
 
 /**
@@ -147,7 +152,7 @@ void cjtag_initialize(struct mpsse_ctx *ctx)
 	local_ctx = ctx;
 
 	/* Initialize the FTDI chip pins state...*/
-	mpsse_write(local_ctx, puDigilentHs2cInitializeSequence, ARRAY_SIZE(puDigilentHs2cInitializeSequence));
+	mpsse_write(local_ctx, puAshlingOPLDInitializeSequence, ARRAY_SIZE(puAshlingOPLDInitializeSequence));
 	mpsse_read(local_ctx, &ucResponse, 1);
 
 	/* Issue the escape sequence...*/
@@ -165,73 +170,138 @@ void cjtag_initialize(struct mpsse_ctx *ctx)
 */
 void cjtag_execute_scan(struct jtag_command *cmd)
 {
-	int i;
-	unsigned char ucTDI = 0;
-	unsigned int ulPreamble = 0;
+       uint32_t i;
+       uint8_t ucTDI = 0;
+       uint32_t ulPreamble = 0;
+       //to send data to target
+       uint8_t* prepared_outbuffer = NULL;
+       uint8_t zero_buf[16], one_buf=0xff ;
+       //to receive data from target
+       uint8_t* inbuffer = NULL;
+       memset(zero_buf,0x00,16);
+       /*
+       if (cmd->cmd.scan->num_fields != 1) {
+           //LOG_ERROR("Unexpected field size of %d", cmd->cmd.scan->num_fields);
+           return;
+       }
+       */
+       struct scan_field* field = cmd->cmd.scan->fields;
+       uint32_t scan_size = 0;
+       if (cmd->cmd.scan->num_fields > 1)
+       {
+           //prepare multi-tap buffer here.
+           //CJTAG implementation does not support seperate multi-tap MPSSE commands as in the case of JTAG mode
+           prepared_outbuffer = (uint8_t*)malloc(MAX_SUPPORTED_SCAN_LENGTH-(MAX_PREAMBLE + MAX_POSTAMBLE));
+           inbuffer = (uint8_t*)malloc(MAX_SUPPORTED_SCAN_LENGTH - (MAX_PREAMBLE + MAX_POSTAMBLE));
+           for (i = 0; i < (uint32_t)cmd->cmd.scan->num_fields; i++, field++) {
+               if (cmd->cmd.scan->ir_scan)
+               {
+                   bit_copy(prepared_outbuffer, scan_size, field->out_value, 0, field->num_bits);
+               }
+               else {
+                   if (field->out_value)
+                   {
+                       //there is data to the dr scan
+                       bit_copy(prepared_outbuffer, scan_size, field->out_value,0, field->num_bits);
+                   }
+                   else {
+                       if(1== field->num_bits)
+                           //considered as tap under bypass
+                           bit_copy(prepared_outbuffer, scan_size, &one_buf, 0, field->num_bits);
+                       else
+                           //if not bypass and no input buffer, fill zeros
+                       bit_copy(prepared_outbuffer, scan_size, zero_buf, 0, field->num_bits);
 
-	if (cmd->cmd.scan->num_fields != 1) {
-		LOG_ERROR("Unexpected field size of %d", cmd->cmd.scan->num_fields);
-		return;
-	}
+                   }
+               }
+               scan_size += field->num_bits;
+           }
+       }
+       else
+       {
+           prepared_outbuffer = (uint8_t *)field->out_value;
+           inbuffer = field->in_value;
+           scan_size = field->num_bits;
+       }
+       
 
-	struct scan_field *field = cmd->cmd.scan->fields;
+       if ((scan_size + MAX_PREAMBLE + MAX_POSTAMBLE) > MAX_SUPPORTED_SCAN_LENGTH) {
+           //LOG_ERROR("Scan length too long at %d", field->num_bits);
+           return;
+       }
 
-	if ((field->num_bits + MAX_PREAMBLE + MAX_POSTAMBLE)  > MAX_SUPPORTED_SCAN_LENGTH) {
-		LOG_ERROR("Scan length too long at %d", field->num_bits);
-		return;
-	}
+       ulTxCount = 0;
 
-	ulTxCount = 0;
+       if (cmd->cmd.scan->ir_scan) {
+           if (tap_get_state() != TAP_IRSHIFT)
+               cjtag_move_to_state(TAP_IRSHIFT);
+       }
+       else {
+           if (tap_get_state() != TAP_DRSHIFT)
+               cjtag_move_to_state(TAP_DRSHIFT);
+       }
 
-	if (cmd->cmd.scan->ir_scan) {
-		if (tap_get_state() != TAP_IRSHIFT)
-			cjtag_move_to_state(TAP_IRSHIFT);
-	}
-	else {
-		if (tap_get_state() != TAP_DRSHIFT)
-			cjtag_move_to_state(TAP_DRSHIFT);
-	}
+       ulPreamble = ulTxCount;
 
-	ulPreamble = ulTxCount;
+       tap_set_end_state(cmd->cmd.scan->end_state);
 
-	tap_set_end_state(cmd->cmd.scan->end_state);
+       for (i = 0; i < scan_size - 1; i++) {
+           if (prepared_outbuffer)
+               bit_copy(&ucTDI, 0, prepared_outbuffer, i, 1);
 
-	for (i = 0; i < field->num_bits - 1; i++) {
-		if (field->out_value)
-			bit_copy(&ucTDI, 0, field->out_value, i, 1);
-
-		if (ucTDI)
-			send_JTAG(TMS_0 | TDI_1);
-		else
-			send_JTAG(TMS_0 | TDI_0);
-	}
-
-
-	if (field->out_value)
-		bit_copy(&ucTDI, 0, field->out_value, i, 1);
-
-	if (ucTDI)
-		send_JTAG(TMS_1 | TDI_1);
-	else
-		send_JTAG(TMS_1 | TDI_0);
+           if (ucTDI)
+               send_JTAG(TMS_0 | TDI_1);
+           else
+               send_JTAG(TMS_0 | TDI_0);
+       }
 
 
-	if (cmd->cmd.scan->ir_scan)
-		tap_set_state(TAP_IREXIT1);
-	else
-		tap_set_state(TAP_DREXIT1);
+       if (prepared_outbuffer)
+           bit_copy(&ucTDI, 0, prepared_outbuffer, i, 1);
 
-	/* Move to the end state... */
-	cjtag_move_to_state(cmd->cmd.scan->end_state);
+       if (ucTDI)
+           send_JTAG(TMS_1 | TDI_1);
+       else
+           send_JTAG(TMS_1 | TDI_0);
 
-	/* Perform the scan... */
-	mpsse_read(local_ctx, pucRxBuffer, field->num_bits + ulTxCount);
 
-	if (field->in_value) {
-		for (i = 0; i < field->num_bits; i++) {
-			bit_copy(field->in_value, i, (const unsigned char *)&pucRxBuffer[i + ulPreamble], 7, 1);
-		}
-	}
+       if (cmd->cmd.scan->ir_scan)
+           tap_set_state(TAP_IREXIT1);
+       else
+           tap_set_state(TAP_DREXIT1);
+
+       /* Move to the end state... */
+       cjtag_move_to_state(cmd->cmd.scan->end_state);
+
+       /* Perform the scan... */
+       mpsse_read(local_ctx, pucRxBuffer, scan_size + ulTxCount);
+
+       if (inbuffer) {
+           for (i = 0; i < scan_size; i++) {
+               bit_copy(inbuffer, i, (const uint8_t*)&pucRxBuffer[i + ulPreamble], 7, 1);
+           }
+       }
+
+       if (cmd->cmd.scan->num_fields > 1)
+       {
+           //exract data from multi-tap buffer here.
+           // usually we do not have in_value in IR scan during multi-tap configuration scan
+           if (!cmd->cmd.scan->ir_scan)
+           {
+               field = cmd->cmd.scan->fields;
+               scan_size = 0;
+               for (i = 0; i < (uint32_t)cmd->cmd.scan->num_fields; i++, field++) {
+
+                    if (field->in_value)
+                    {
+                        bit_copy(field->in_value, 0, inbuffer, scan_size, field->num_bits);
+                    }
+                    scan_size += field->num_bits;
+                }
+           }
+           free(prepared_outbuffer);
+           free(inbuffer);
+       }
 }
 
 /**
@@ -287,57 +357,75 @@ static void transitions(const char *tms_values, int tdi_value)
 				pucBuffer[ucCount++] = 0x00;
 		}
 		else {
-			if (*p == '1') {
-				pucBuffer[ucCount++] = 0x1B;
-				pucBuffer[ucCount++] = 0x00;
-				pucBuffer[ucCount++] = 0x03;
+            if (*p == '1') {
+                  pucBuffer[ucCount++] = 0x1B;
+                  pucBuffer[ucCount++] = 0x00;
+                  pucBuffer[ucCount++] = 0x03;
 
-				pucBuffer[ucCount++] = 0x97;
-				pucBuffer[ucCount++] = 0x97;
-				pucBuffer[ucCount++] = 0x97;
+                  pucBuffer[ucCount++] = 0x97;
+                  pucBuffer[ucCount++] = 0x97;
+                  pucBuffer[ucCount++] = 0x97;
 
-				pucBuffer[ucCount++] = 0x80;
-				pucBuffer[ucCount++] = 0xB3;
-				pucBuffer[ucCount++] = 0xEB;
+                  pucBuffer[ucCount++] = 0x80;
+                  pucBuffer[ucCount++] = 0x63;
+                  pucBuffer[ucCount++] = 0xFB;
+                  pucBuffer[ucCount++] = 0x82;
+                  pucBuffer[ucCount++] = 0x0B;
+                  pucBuffer[ucCount++] = 0xFF;
 
-				pucBuffer[ucCount++] = 0x97;
+                  pucBuffer[ucCount++] = 0x97;
 
-				pucBuffer[ucCount++] = 0x80;
-				pucBuffer[ucCount++] = 0x82;
-				pucBuffer[ucCount++] = 0xEB;
+                  pucBuffer[ucCount++] = 0x80;
+                  pucBuffer[ucCount++] = 0x62;
+                  pucBuffer[ucCount++] = 0xFB;
+                  pucBuffer[ucCount++] = 0x82;
+                  pucBuffer[ucCount++] = 0x01;
+                  pucBuffer[ucCount++] = 0xFF;
 
-				pucBuffer[ucCount++] = 0x2A;
-				pucBuffer[ucCount++] = 0x00;
+                  pucBuffer[ucCount++] = 0x2A;
+                  pucBuffer[ucCount++] = 0x00;
 
-				pucBuffer[ucCount++] = 0x80;
-				pucBuffer[ucCount++] = 0xA2;
-				pucBuffer[ucCount++] = 0xEB;
-			}
-			else {
-				pucBuffer[ucCount++] = 0x1B;
-				pucBuffer[ucCount++] = 0x00;
-				pucBuffer[ucCount++] = 0x01;
+                  pucBuffer[ucCount++] = 0x80;
+                  pucBuffer[ucCount++] = 0x62;
+                  pucBuffer[ucCount++] = 0xFB;
+                  pucBuffer[ucCount++] = 0x82;
+                  pucBuffer[ucCount++] = 0x03;
+                  pucBuffer[ucCount++] = 0xFF;
+            }
+            else {
+                  pucBuffer[ucCount++] = 0x1B;
+                  pucBuffer[ucCount++] = 0x00;
+                  pucBuffer[ucCount++] = 0x01;
 
-				pucBuffer[ucCount++] = 0x97;
-				pucBuffer[ucCount++] = 0x97;
-				pucBuffer[ucCount++] = 0x97;
+                  pucBuffer[ucCount++] = 0x97;
+                  pucBuffer[ucCount++] = 0x97;
+                  pucBuffer[ucCount++] = 0x97;
 
-				pucBuffer[ucCount++] = 0x80;
-				pucBuffer[ucCount++] = 0xB1;
-				pucBuffer[ucCount++] = 0xEB;
+                  pucBuffer[ucCount++] = 0x80;
+                  pucBuffer[ucCount++] = 0x61;
+                  pucBuffer[ucCount++] = 0xFB;
+                  pucBuffer[ucCount++] = 0x82;
+                  pucBuffer[ucCount++] = 0x0B;
+                  pucBuffer[ucCount++] = 0xFF;
 
-				pucBuffer[ucCount++] = 0x97;
+                  pucBuffer[ucCount++] = 0x97;
 
-				pucBuffer[ucCount++] = 0x80;
-				pucBuffer[ucCount++] = 0x80;
-				pucBuffer[ucCount++] = 0xEB;
+                  pucBuffer[ucCount++] = 0x80;
+                  pucBuffer[ucCount++] = 0x60;
+                  pucBuffer[ucCount++] = 0xFB;
+                  pucBuffer[ucCount++] = 0x82;
+                  pucBuffer[ucCount++] = 0x01;
+                  pucBuffer[ucCount++] = 0xFF;
 
-				pucBuffer[ucCount++] = 0x2A;
-				pucBuffer[ucCount++] = 0x00;
+                  pucBuffer[ucCount++] = 0x2A;
+                  pucBuffer[ucCount++] = 0x00;
 
-				pucBuffer[ucCount++] = 0x80;
-				pucBuffer[ucCount++] = 0xA0;
-				pucBuffer[ucCount++] = 0xEB;
+                  pucBuffer[ucCount++] = 0x80;
+                  pucBuffer[ucCount++] = 0x60;
+                  pucBuffer[ucCount++] = 0xFB;
+                  pucBuffer[ucCount++] = 0x82;
+                  pucBuffer[ucCount++] = 0x03;
+                  pucBuffer[ucCount++] = 0xFF;
 			}
 		}
 	}
@@ -453,63 +541,72 @@ static void send_2part_command(unsigned opcode, unsigned operand)
 */
 static void send_JTAG(unsigned tms_and_tdi)
 {
-	uint8_t pucBuffer[0x100];
-	unsigned char ucCount = 0;
+     uint8_t pucBuffer[0x100];
+      uint8_t ucCount = 0;
 
-	pucBuffer[ucCount++] = 0x1B;
-	pucBuffer[ucCount++] = 0x00;
-	if (tms_and_tdi == (TMS_0 | TDI_0))
-		pucBuffer[ucCount++] = 0x01;
-	else if (tms_and_tdi == (TMS_0 | TDI_1))
-		pucBuffer[ucCount++] = 0x00;
-	else if (tms_and_tdi == (TMS_1 | TDI_0))
-		pucBuffer[ucCount++] = 0x03;
-	else if (tms_and_tdi == (TMS_1 | TDI_1))
-		pucBuffer[ucCount++] = 0x02;
+      pucBuffer[ucCount++] = 0x1B;
+      pucBuffer[ucCount++] = 0x00;
+      if (tms_and_tdi == (TMS_0 | TDI_0))
+         pucBuffer[ucCount++] = 0x01;
+      else if (tms_and_tdi == (TMS_0 | TDI_1))
+         pucBuffer[ucCount++] = 0x00;
+      else if (tms_and_tdi == (TMS_1 | TDI_0))
+         pucBuffer[ucCount++] = 0x03;
+      else if (tms_and_tdi == (TMS_1 | TDI_1))
+         pucBuffer[ucCount++] = 0x02;
 
-	pucBuffer[ucCount++] = 0x97;
-	pucBuffer[ucCount++] = 0x97;
-	pucBuffer[ucCount++] = 0x97;
+      pucBuffer[ucCount++] = 0x97;
+      pucBuffer[ucCount++] = 0x97;
+      pucBuffer[ucCount++] = 0x97;
 
-	pucBuffer[ucCount++] = 0x80;
-	if (tms_and_tdi == (TMS_0 | TDI_0))
-		pucBuffer[ucCount++] = 0xB1;
-	else if (tms_and_tdi == (TMS_0 | TDI_1))
-		pucBuffer[ucCount++] = 0xB1;
-	else if (tms_and_tdi == (TMS_1 | TDI_0))
-		pucBuffer[ucCount++] = 0xB3;
-	else if (tms_and_tdi == (TMS_1 | TDI_1))
-		pucBuffer[ucCount++] = 0xB3;
-	pucBuffer[ucCount++] = 0xEB;
+      pucBuffer[ucCount++] = 0x80;
+      if (tms_and_tdi == (TMS_0 | TDI_0))
+         pucBuffer[ucCount++] = 0x61;
+      else if (tms_and_tdi == (TMS_0 | TDI_1))
+         pucBuffer[ucCount++] = 0x61;
+      else if (tms_and_tdi == (TMS_1 | TDI_0))
+         pucBuffer[ucCount++] = 0x63;
+      else if (tms_and_tdi == (TMS_1 | TDI_1))
+         pucBuffer[ucCount++] = 0x63;
+      pucBuffer[ucCount++] = 0xFB;
+      pucBuffer[ucCount++] = 0x82;
+      pucBuffer[ucCount++] = 0x0B;
+      pucBuffer[ucCount++] = 0xFF;
 
-	pucBuffer[ucCount++] = 0x97;
+   pucBuffer[ucCount++] = 0x97;
 
-	pucBuffer[ucCount++] = 0x80;
-	if (tms_and_tdi == (TMS_0 | TDI_0))
-		pucBuffer[ucCount++] = 0x80;
-	else if (tms_and_tdi == (TMS_0 | TDI_1))
-		pucBuffer[ucCount++] = 0x80;
-	else if (tms_and_tdi == (TMS_1 | TDI_0))
-		pucBuffer[ucCount++] = 0x82;
-	else if (tms_and_tdi == (TMS_1 | TDI_1))
-		pucBuffer[ucCount++] = 0x82;
-	pucBuffer[ucCount++] = 0xEB;
+      pucBuffer[ucCount++] = 0x80;
+      if (tms_and_tdi == (TMS_0 | TDI_0))
+         pucBuffer[ucCount++] = 0x60;
+      else if (tms_and_tdi == (TMS_0 | TDI_1))
+         pucBuffer[ucCount++] = 0x60;
+      else if (tms_and_tdi == (TMS_1 | TDI_0))
+         pucBuffer[ucCount++] = 0x62;
+      else if (tms_and_tdi == (TMS_1 | TDI_1))
+         pucBuffer[ucCount++] = 0x62;
+      pucBuffer[ucCount++] = 0xFB;
+      pucBuffer[ucCount++] = 0x82;
+      pucBuffer[ucCount++] = 0x01;
+      pucBuffer[ucCount++] = 0xFF;
 
-	pucBuffer[ucCount++] = 0x2A;
-	pucBuffer[ucCount++] = 0x00;
+      pucBuffer[ucCount++] = 0x2A;
+      pucBuffer[ucCount++] = 0x00;
 
-	pucBuffer[ucCount++] = 0x80;
-	if (tms_and_tdi == (TMS_0 | TDI_0))
-		pucBuffer[ucCount++] = 0xA0;
-	else if (tms_and_tdi == (TMS_0 | TDI_1))
-		pucBuffer[ucCount++] = 0xA0;
-	else if (tms_and_tdi == (TMS_1 | TDI_0))
-		pucBuffer[ucCount++] = 0xA2;
-	else if (tms_and_tdi == (TMS_1 | TDI_1))
-		pucBuffer[ucCount++] = 0xA2;
-	pucBuffer[ucCount++] = 0xEB;
+      pucBuffer[ucCount++] = 0x80;
+      if (tms_and_tdi == (TMS_0 | TDI_0))
+         pucBuffer[ucCount++] = 0x60;
+      else if (tms_and_tdi == (TMS_0 | TDI_1))
+         pucBuffer[ucCount++] = 0x60;
+      else if (tms_and_tdi == (TMS_1 | TDI_0))
+         pucBuffer[ucCount++] = 0x62;
+      else if (tms_and_tdi == (TMS_1 | TDI_1))
+         pucBuffer[ucCount++] = 0x62;
+      pucBuffer[ucCount++] = 0xFB;
+      pucBuffer[ucCount++] = 0x82;
+      pucBuffer[ucCount++] = 0x03;
+      pucBuffer[ucCount++] = 0xFF;
 
-	mpsse_write(local_ctx, pucBuffer, ucCount);
+      mpsse_write(local_ctx, pucBuffer, ucCount);
 }
 
 /**
@@ -625,14 +722,14 @@ static void set_format(TycJtagScanFormat sf)
 		0x80,0xE0,0xEB,
 		0x82,0x00,0x60
 };
-	uint8_t oscan1FormatSeq[] = {
-		0x80,0xE0,0xEB,
-		0x82,0x00,0x60,
-		0x80,0xA0,0xEB,
-		0x82,0x60,0x60,
-		0x80,0xA0,0xEB,
-		0x82,0x60,0x60
-};
+   uint8_t oscan1FormatSeq[] = {
+      0x80,0x60,0xFB,
+      0x82,0x00,0xFF,
+      0x80,0x60,0xFB,
+      0x82,0x03,0xFF,
+      0x80,0x60,0xFB,
+      0x82,0x03,0xFF
+   };
 
 	if (sf == tycJtagScanFormat)
 		return ;
@@ -688,67 +785,84 @@ static void cjtag_transitions (const char *tms_values, int tdi_value)
 
 	/* Take a string of 1s and 0s (tms_values) and execute transitions
 	   with them.  TDI is held fixed. */
-	for (const char *p = tms_values; *p; p++) {
+      for (const char* p = tms_values; *p; p++) {
 
-		if (*p == '_' || *p == ' ') 
-			continue;
+           if (*p == '_' || *p == ' ')
+               continue;
 
-		ulTxCount++;
+           ulTxCount++;
 
-		if (*p == '1') {
-			pucBuffer[ucCount++] = 0x1B;
-			pucBuffer[ucCount++] = 0x00;
-			pucBuffer[ucCount++] = 0x03;
+           if (*p == '1') {
+               pucBuffer[ucCount++] = 0x1B;
+               pucBuffer[ucCount++] = 0x00;
+               pucBuffer[ucCount++] = 0x03;
 
-			pucBuffer[ucCount++] = 0x97;
-			pucBuffer[ucCount++] = 0x97;
-			pucBuffer[ucCount++] = 0x97;
+               pucBuffer[ucCount++] = 0x97;
+               pucBuffer[ucCount++] = 0x97;
+               pucBuffer[ucCount++] = 0x97;
 
-			pucBuffer[ucCount++] = 0x80;
-			pucBuffer[ucCount++] = 0xB3;
-			pucBuffer[ucCount++] = 0xEB;
+               pucBuffer[ucCount++] = 0x80;
+               pucBuffer[ucCount++] = 0x63;
+               pucBuffer[ucCount++] = 0xFB;
+               pucBuffer[ucCount++] = 0x82;
+               pucBuffer[ucCount++] = 0x0B;
+               pucBuffer[ucCount++] = 0xFF;
 
-			pucBuffer[ucCount++] = 0x97;
+               pucBuffer[ucCount++] = 0x97;
 
-			pucBuffer[ucCount++] = 0x80;
-			pucBuffer[ucCount++] = 0x82;
-			pucBuffer[ucCount++] = 0xEB;
+               pucBuffer[ucCount++] = 0x80;
+               pucBuffer[ucCount++] = 0x62;
+               pucBuffer[ucCount++] = 0xFB;
+               pucBuffer[ucCount++] = 0x82;
+               pucBuffer[ucCount++] = 0x01;
+               pucBuffer[ucCount++] = 0xFF;
 
-			pucBuffer[ucCount++] = 0x2A;
-			pucBuffer[ucCount++] = 0x00;
+               pucBuffer[ucCount++] = 0x2A;
+               pucBuffer[ucCount++] = 0x00;
 
-			pucBuffer[ucCount++] = 0x80;
-			pucBuffer[ucCount++] = 0xA2;
-			pucBuffer[ucCount++] = 0xEB;
-		}
-		else {
-			pucBuffer[ucCount++] = 0x1B;
-			pucBuffer[ucCount++] = 0x00;
-			pucBuffer[ucCount++] = 0x01;
+               pucBuffer[ucCount++] = 0x80;
+               pucBuffer[ucCount++] = 0x62;
+               pucBuffer[ucCount++] = 0xFB;
+               pucBuffer[ucCount++] = 0x82;
+               pucBuffer[ucCount++] = 0x03;
+               pucBuffer[ucCount++] = 0xFF;
+           }
+           else {
+               pucBuffer[ucCount++] = 0x1B;
+               pucBuffer[ucCount++] = 0x00;
+               pucBuffer[ucCount++] = 0x01;
 
-			pucBuffer[ucCount++] = 0x97;
-			pucBuffer[ucCount++] = 0x97;
-			pucBuffer[ucCount++] = 0x97;
+               pucBuffer[ucCount++] = 0x97;
+               pucBuffer[ucCount++] = 0x97;
+               pucBuffer[ucCount++] = 0x97;
 
-			pucBuffer[ucCount++] = 0x80;
-			pucBuffer[ucCount++] = 0xB1;
-			pucBuffer[ucCount++] = 0xEB;
+               pucBuffer[ucCount++] = 0x80;
+               pucBuffer[ucCount++] = 0x61;
+               pucBuffer[ucCount++] = 0xFB;
+               pucBuffer[ucCount++] = 0x82;
+               pucBuffer[ucCount++] = 0x0B;
+               pucBuffer[ucCount++] = 0xFF;
 
-			pucBuffer[ucCount++] = 0x97;
+               pucBuffer[ucCount++] = 0x97;
 
-			pucBuffer[ucCount++] = 0x80;
-			pucBuffer[ucCount++] = 0x80;
-			pucBuffer[ucCount++] = 0xEB;
+               pucBuffer[ucCount++] = 0x80;
+               pucBuffer[ucCount++] = 0x60;
+               pucBuffer[ucCount++] = 0xFB;
+               pucBuffer[ucCount++] = 0x82;
+               pucBuffer[ucCount++] = 0x01;
+               pucBuffer[ucCount++] = 0xFF;
 
-			pucBuffer[ucCount++] = 0x2A;
-			pucBuffer[ucCount++] = 0x00;
+               pucBuffer[ucCount++] = 0x2A;
+               pucBuffer[ucCount++] = 0x00;
 
-			pucBuffer[ucCount++] = 0x80;
-			pucBuffer[ucCount++] = 0xA0;
-			pucBuffer[ucCount++] = 0xEB;
-		}
-	}
-
+               pucBuffer[ucCount++] = 0x80;
+               pucBuffer[ucCount++] = 0x60;
+               pucBuffer[ucCount++] = 0xFB;
+               pucBuffer[ucCount++] = 0x82;
+               pucBuffer[ucCount++] = 0x03;
+               pucBuffer[ucCount++] = 0xFF;
+           }
+       }
 	mpsse_write(local_ctx, pucBuffer, ucCount);
 }
 

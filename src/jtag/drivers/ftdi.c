@@ -195,20 +195,33 @@ static int ftdi_set_signal(const struct signal *s, char value)
 		assert(0 && "invalid signal level specifier");
 		return ERROR_FAIL;
 	}
+   if (!strcmp(s->name, "LED") && cjtag_mode)
+   {
+      uint8_t val = 0;
+      mpsse_read_data_bits_high_byte(mpsse_ctx, &val);
+      mpsse_flush(mpsse_ctx);
+      if (data)
+         mpsse_set_data_bits_high_byte(mpsse_ctx, val & 0xF7, 0xFF);
+      else
+         mpsse_set_data_bits_high_byte(mpsse_ctx, val | 0x08, 0xFF);
+   }
+   else
+   {
 
-	uint16_t old_output = output;
-	uint16_t old_direction = direction;
+      uint16_t old_output = output;
+      uint16_t old_direction = direction;
 
-	output = data ? output | s->data_mask : output & ~s->data_mask;
-	if (s->oe_mask == s->data_mask)
-		direction = oe ? direction | s->oe_mask : direction & ~s->oe_mask;
-	else
-		output = oe ? output | s->oe_mask : output & ~s->oe_mask;
+      output = data ? output | s->data_mask : output & ~s->data_mask;
+      if (s->oe_mask == s->data_mask)
+         direction = oe ? direction | s->oe_mask : direction & ~s->oe_mask;
+      else
+         output = oe ? output | s->oe_mask : output & ~s->oe_mask;
 
-	if ((output & 0xff) != (old_output & 0xff) || (direction & 0xff) != (old_direction & 0xff))
-		mpsse_set_data_bits_low_byte(mpsse_ctx, output & 0xff, direction & 0xff);
-	if ((output >> 8 != old_output >> 8) || (direction >> 8 != old_direction >> 8))
-		mpsse_set_data_bits_high_byte(mpsse_ctx, output >> 8, direction >> 8);
+      if ((output & 0xff) != (old_output & 0xff) || (direction & 0xff) != (old_direction & 0xff))
+         mpsse_set_data_bits_low_byte(mpsse_ctx, output & 0xff, direction & 0xff);
+      if ((output >> 8 != old_output >> 8) || (direction >> 8 != old_direction >> 8))
+         mpsse_set_data_bits_high_byte(mpsse_ctx, output >> 8, direction >> 8);
+   }
 
 	return ERROR_OK;
 }
